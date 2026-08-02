@@ -15,7 +15,13 @@ export function FileDropzone({ files, onFilesAdded, onFileRemove, accept, label,
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     const droppedFiles = Array.from(e.dataTransfer.files) as File[];
-    const filteredFiles = droppedFiles.filter(f => f.name.match(new RegExp(accept.replace(/;/g, '|'), 'i')));
+    const acceptedExtensions = accept.split(',').map(ext => ext.trim().toLowerCase());
+    
+    const filteredFiles = droppedFiles.filter(f => {
+      const fileName = f.name.toLowerCase();
+      return acceptedExtensions.some(ext => fileName.endsWith(ext));
+    });
+
     if (filteredFiles.length > 0) {
       onFilesAdded(multiple ? [...files, ...filteredFiles] : filteredFiles.slice(0, 1));
     }

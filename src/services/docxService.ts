@@ -5,6 +5,7 @@ interface DocxData {
   summary: string;
   qna: { question: string; answer: string }[];
   links: string[];
+  hostMessages: { sender: string; message: string }[];
 }
 
 export async function generateDocx(data: DocxData) {
@@ -52,6 +53,31 @@ export async function generateDocx(data: DocxData) {
     });
   } else {
     children.push(new Paragraph({ text: "No links were shared." }));
+  }
+
+  // Host Messages Section
+  children.push(
+    new Paragraph({
+      text: "Host & Panelist Messages",
+      heading: HeadingLevel.HEADING_2,
+      spacing: { before: 400, after: 200 },
+    })
+  );
+
+  if (data.hostMessages && data.hostMessages.length > 0) {
+    data.hostMessages.forEach((msg) => {
+      children.push(
+        new Paragraph({
+          children: [
+            new TextRun({ text: `${msg.sender}: `, bold: true }),
+            new TextRun({ text: msg.message }),
+          ],
+          spacing: { before: 150, after: 150 },
+        })
+      );
+    });
+  } else {
+    children.push(new Paragraph({ text: "No host messages found." }));
   }
 
   // Q&A Section

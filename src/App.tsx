@@ -1,8 +1,8 @@
-import { FileText, Download, Play, Users, Link as LinkIcon, CheckCircle2, Copy, Check } from "lucide-react";
+import { FileText, Download, Play, Users, Link as LinkIcon, CheckCircle2, Copy, Check, MessageSquare, Send, Trash2 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { FileDropzone } from "./components/FileDropzone";
 import { parseAttendanceCsv } from "./services/csvParser";
-import { analyzeTranscriptsAndChats } from "./services/geminiService";
+import { analyzeTranscriptsAndChats, askQuestionAboutSession } from "./services/geminiService";
 import { generateDocx } from "./services/docxService";
 import { cn } from "./lib/utils";
 
@@ -22,10 +22,17 @@ export default function App() {
   const [summary, setSummary] = useState("");
   const [qnaList, setQnaList] = useState<QnA[]>([]);
   const [linksList, setLinksList] = useState<string[]>([]);
+  const [hostMessagesList, setHostMessagesList] = useState<{sender: string; message: string}[]>([]);
   const [error, setError] = useState("");
+
+  const [customQuestion, setCustomQuestion] = useState("");
+  const [customAnswer, setCustomAnswer] = useState("");
+  const [isAsking, setIsAsking] = useState(false);
+  const [askError, setAskError] = useState("");
 
   const [copiedQnA, setCopiedQnA] = useState(false);
   const [copiedLinks, setCopiedLinks] = useState(false);
+  const [copiedHostMessages, setCopiedHostMessages] = useState(false);
 
   const handleCopyQnA = () => {
     const text = qnaList.map((item, i) => `Q${i + 1}: ${item.question}\nA: ${item.answer}`).join('\n\n');
@@ -40,6 +47,15 @@ export default function App() {
     setCopiedLinks(true);
     setTimeout(() => setCopiedLinks(false), 2000);
   };
+
+  const handleCopyHostMessages = () => {
+    const text = hostMessagesList.map(msg => `${msg.sender}:\n${msg.message}`).join('\n\n');
+    navigator.clipboard.writeText(text);
+    setCopiedHostMessages(true);
+    setTimeout(() => setCopiedHostMessages(false), 2000);
+  };
+
+  const [loadingStatus, setLoadingStatus] = useState("Analyzing...");
 
   const handleCsvAdded = async (files: File[]) => {
     setCsvFiles(files);
@@ -61,7 +77,20 @@ export default function App() {
     let attendeesWithDuration = 0;
     
     attendanceData.forEach(row => {
-      let durationStr = row['Duration (Minutes)'] || row['Duration'];
+      // Find duration key (case-insensitive)
+      let durationStr = 
+        row['Duration (Minutes)'] || 
+        row['Duration'] || 
+        row['Time in Session (minutes)'] ||
+        row['Time in Session'];
+        
+      if (!durationStr) {
+        const key = Object.keys(row).find(k => k.toLowerCase().includes('duration') || k.toLowerCase().includes('time in session'));
+        if (key) {
+          durationStr = row[key];
+        }
+      }
+      
       let duration = parseInt(durationStr) || 0;
       if (duration > 0) {
         totalDuration += duration;
@@ -78,6 +107,22 @@ export default function App() {
   const handleAnalyze = async () => {
     setIsAnalyzing(true);
     setError("");
+
+    const statuses = [
+      "Reading transcripts & chats...",
+      "Extracting Questions & Answers...",
+      "Identifying shared links...",
+      "Generating session summary...",
+      "Finalizing analysis..."
+    ];
+    let statusIndex = 0;
+    setLoadingStatus(statuses[0]);
+
+    const intervalId = setInterval(() => {
+      statusIndex = Math.min(statusIndex + 1, statuses.length - 1);
+      setLoadingStatus(statuses[statusIndex]);
+    }, 4000);
+
     try {
       const vttTexts = await Promise.all(vttFiles.map(f => f.text()));
       const chatTexts = await Promise.all(chatFiles.map(f => f.text()));
@@ -85,6 +130,7 @@ export default function App() {
       const result = await analyzeTranscriptsAndChats(vttTexts, chatTexts);
       setSummary(result.summary);
       setQnaList(result.qna);
+      setHostMessagesList(result.hostMessages || []);
       
       // Fallback filter: ensures the specified links are omitted even if the model hallucinates them
       const ignoredLinks = [
@@ -103,7 +149,26 @@ export default function App() {
       console.error(e);
       setError(e.message || "An error occurred during analysis.");
     } finally {
+      clearInterval(intervalId);
       setIsAnalyzing(false);
+    }
+  };
+
+  const handleAskQuestion = async () => {
+    if (!customQuestion.trim() || !canAnalyze) return;
+    setIsAsking(true);
+    setAskError("");
+    setCustomAnswer("");
+    try {
+      const vttTexts = await Promise.all(vttFiles.map(f => f.text()));
+      const chatTexts = await Promise.all(chatFiles.map(f => f.text()));
+      const answer = await askQuestionAboutSession(vttTexts, chatTexts, customQuestion);
+      setCustomAnswer(answer);
+    } catch (e: any) {
+      console.error(e);
+      setAskError(e.message || "An error occurred while answering your question.");
+    } finally {
+      setIsAsking(false);
     }
   };
 
@@ -113,8 +178,24 @@ export default function App() {
         summary,
         qna: qnaList,
         links: linksList,
+        hostMessages: hostMessagesList,
       });
     }
+  };
+
+  const handleClearData = () => {
+    setVttFiles([]);
+    setChatFiles([]);
+    setCsvFiles([]);
+    setAttendanceData([]);
+    setSummary("");
+    setQnaList([]);
+    setLinksList([]);
+    setHostMessagesList([]);
+    setError("");
+    setCustomQuestion("");
+    setCustomAnswer("");
+    setAskError("");
   };
 
   const canAnalyze = vttFiles.length > 0 || chatFiles.length > 0;
@@ -130,7 +211,7 @@ export default function App() {
               <FileText className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="font-semibold text-lg tracking-tight">Zoom Open Mic Analyzer</h1>
+              <h1 className="font-semibold text-lg tracking-tight">Session Analyzer</h1>
               <p className="text-xs text-gray-500 font-medium tracking-wide">Q&A EXTRACTION & ANALYTICS</p>
             </div>
           </div>
@@ -148,14 +229,14 @@ export default function App() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <FileDropzone 
                 label="VTT Transcripts"
-                accept=".vtt"
+                accept=".vtt, .csv"
                 files={vttFiles}
                 onFilesAdded={setVttFiles}
                 onFileRemove={(i) => setVttFiles(vttFiles.filter((_, idx) => idx !== i))}
               />
               <FileDropzone 
                 label="Saved Chats"
-                accept=".txt"
+                accept=".txt, .csv"
                 multiple={true}
                 files={chatFiles}
                 onFilesAdded={setChatFiles}
@@ -175,12 +256,23 @@ export default function App() {
               <p className="text-sm text-gray-500">
                 {canAnalyze ? "Files ready for analysis." : "Upload VTT or Chat files to enable analysis."}
               </p>
-              <button 
-                onClick={handleAnalyze}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleClearData}
+                  disabled={isAnalyzing || (!vttFiles.length && !chatFiles.length && !csvFiles.length && !summary)}
+                  className="flex items-center gap-2 px-6 py-3 rounded-full font-medium transition-all shadow-sm bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 hover:text-red-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>Clear Data</span>
+                </button>
+                <button 
+                  onClick={handleAnalyze}
                 disabled={!canAnalyze || isAnalyzing}
                 className={cn(
                   "flex items-center gap-2 px-6 py-3 rounded-full font-medium transition-all shadow-sm",
-                  canAnalyze && !isAnalyzing ? "bg-blue-600 text-white hover:bg-blue-700 hover:shadow" : "bg-gray-100 text-gray-400 cursor-not-allowed"
+                  canAnalyze && !isAnalyzing ? "bg-blue-600 text-white hover:bg-blue-700 hover:shadow" : 
+                  isAnalyzing ? "bg-blue-600 text-white opacity-80 cursor-wait" : 
+                  "bg-gray-100 text-gray-400 cursor-not-allowed"
                 )}
               >
                 {isAnalyzing ? (
@@ -188,8 +280,9 @@ export default function App() {
                 ) : (
                   <Play className="w-5 h-5 fill-current" />
                 )}
-                <span>{isAnalyzing ? "Analyzing via Gemini..." : "Extract Q&A & Links"}</span>
-              </button>
+                <span>{isAnalyzing ? loadingStatus : "Extract Q&A & Links"}</span>
+                </button>
+              </div>
             </div>
             {error && (
               <div className="mt-4 p-4 bg-red-50 text-red-700 rounded-xl text-sm font-medium border border-red-100">
@@ -232,6 +325,53 @@ export default function App() {
 
         </div>
 
+        {/* Ask AI Section */}
+        {canAnalyze && (
+          <section className="bg-white p-6 rounded-[24px] shadow-sm border border-gray-100 mb-8">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="p-2 bg-blue-100 rounded-lg text-blue-700">
+                <MessageSquare className="w-5 h-5" />
+              </div>
+              <h2 className="text-lg font-medium">Ask AI about the Session</h2>
+            </div>
+            <div className="flex gap-4">
+              <input
+                type="text"
+                value={customQuestion}
+                onChange={(e) => setCustomQuestion(e.target.value)}
+                placeholder="e.g. Did anyone ask about the new feature? What did the host say about the deadline?"
+                className="flex-1 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 outline-none focus:border-blue-500 transition-colors"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleAskQuestion();
+                }}
+              />
+              <button
+                onClick={handleAskQuestion}
+                disabled={!customQuestion.trim() || isAsking}
+                className="px-6 py-3 bg-blue-600 text-white rounded-xl font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
+              >
+                {isAsking ? (
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
+                <span>Ask</span>
+              </button>
+            </div>
+            {askError && (
+              <div className="mt-4 p-4 bg-red-50 text-red-700 rounded-xl text-sm font-medium border border-red-100">
+                {askError}
+              </div>
+            )}
+            {customAnswer && (
+              <div className="mt-6 p-5 bg-gray-50 rounded-2xl border border-gray-100">
+                <h4 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-2">AI Answer</h4>
+                <p className="text-gray-800 whitespace-pre-wrap">{customAnswer}</p>
+              </div>
+            )}
+          </section>
+        )}
+
         {/* Results Section */}
         {hasResults && (
            <div className="bg-white rounded-[32px] shadow-sm border border-gray-100 p-8">
@@ -257,6 +397,34 @@ export default function App() {
                   <p className="text-gray-700 leading-relaxed text-lg">
                     {summary}
                   </p>
+                </section>
+
+                {/* Host Messages */}
+                <section>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider flex items-center gap-2">
+                      <Users className="w-4 h-4" />
+                      Host/Panelist Messages ({hostMessagesList.length})
+                    </h3>
+                    {hostMessagesList.length > 0 && (
+                      <button 
+                        onClick={handleCopyHostMessages}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                      >
+                        {copiedHostMessages ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
+                        {copiedHostMessages ? "Copied" : "Copy Messages"}
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-4">
+                    {hostMessagesList.map((msg, i) => (
+                      <div key={i} className="p-4 bg-purple-50 rounded-2xl border border-purple-100/50">
+                        <p className="font-medium text-purple-900 mb-1">{msg.sender}</p>
+                        <p className="text-gray-700 text-sm whitespace-pre-wrap">{msg.message}</p>
+                      </div>
+                    ))}
+                    {hostMessagesList.length === 0 && <p className="text-gray-500 italic">No host messages found.</p>}
+                  </div>
                 </section>
 
                 {/* QnA */}

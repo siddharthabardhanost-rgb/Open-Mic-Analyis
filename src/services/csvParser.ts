@@ -10,10 +10,15 @@ export const parseAttendanceCsv = async (file: File): Promise<any[]> => {
         let headers: string[] = [];
         for (const row of results.data as string[][]) {
           if (!headersMatch) {
-            // Find the row that contains headers like Name or First Name
-            if (row.length > 0 && typeof row[0] === 'string' && (row[0].trim() === 'Name (Original Name)' || row[0].trim() === 'Name' || row[0].trim() === 'First Name')) {
+            // Find the row that contains headers
+            const isHeaderRow = row.some(r => {
+              if (typeof r !== 'string') return false;
+              const val = r.trim().toLowerCase();
+              return val.includes('duration') || val.includes('time in session') || val === 'name' || val === 'email' || val.includes('participant');
+            });
+            if (isHeaderRow && row.length > 1) {
               headersMatch = true;
-              headers = row.map(r => r.trim());
+              headers = row.map(r => typeof r === 'string' ? r.trim() : '');
             }
           } else {
             if (row.length === headers.length && row[0]) {

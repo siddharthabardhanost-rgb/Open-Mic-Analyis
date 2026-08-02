@@ -11,6 +11,7 @@ Your tasks:
 1. Extract ALL the Questions and Answers discussed during the sessions. Look closely at both the chat logs and transcripts.
 2. Extract ALL the URLs/Links shared in the chat logs.
 3. Provide a brief summary of the sessions.
+4. Detect and extract important messages sent by the host and panelists to everyone in the chat (excluding the common links you have already extracted or ignored).
 
 CRITICAL: You must completely omit the following links from your output (do not include them in the links list or the summary):
 - https://wa.me/+918910125705
@@ -24,7 +25,10 @@ Return the result in JSON format corresponding to this schema:
   "qna": [
     { "question": "The question asked", "answer": "The answer given (or 'Not answered' if no answer was provided)" }
   ],
-  "links": ["https://...", "https://..."]
+  "links": ["https://...", "https://..."],
+  "hostMessages": [
+    { "sender": "Host or Panelist Name", "message": "The message they sent to everyone" }
+  ]
 }
 
 Transcripts:
@@ -65,9 +69,21 @@ ${chatTexts.map((text, i) => `--- Chat File ${i + 1} ---\n${text}`).join('\n\n')
               items: {
                 type: Type.STRING
               }
+            },
+            hostMessages: {
+              type: Type.ARRAY,
+              description: "Important messages sent by host/panelists to everyone",
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  sender: { type: Type.STRING },
+                  message: { type: Type.STRING }
+                },
+                required: ["sender", "message"]
+              }
             }
           },
-          required: ["summary", "qna", "links"]
+          required: ["summary", "qna", "links", "hostMessages"]
         }
       }
     });
@@ -80,6 +96,7 @@ ${chatTexts.map((text, i) => `--- Chat File ${i + 1} ---\n${text}`).join('\n\n')
         summary: string;
         qna: { question: string; answer: string }[];
         links: string[];
+        hostMessages: { sender: string; message: string }[];
       };
     } catch (parseError) {
       throw new Error("Failed to parse the response from the AI as JSON. The model may have returned an invalid format. Please try running the analysis again.");
@@ -102,5 +119,46 @@ ${chatTexts.map((text, i) => `--- Chat File ${i + 1} ---\n${text}`).join('\n\n')
     } else {
       throw new Error(error.message || "An unexpected error occurred while communicating with the AI service. Please try again.");
     }
+  }
+}
+
+export async function askQuestionAboutSession(vttTexts: string[], chatTexts: string[], question: string) {
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  
+  const prompt = `
+You are an intelligent assistant analyzing Zoom Open Mic session files.
+I am providing you with the transcripts (VTT/CSV) and the chat logs (TXT/CSV) from the sessions.
+
+Your task is to answer the following user question based ONLY on the provided transcripts and chats. 
+If the answer cannot be found in the provided files, politely state that you cannot find the information in the session data.
+
+User Question:
+${question}
+
+Transcripts:
+${vttTexts.map((text, i) => `--- Transcript File ${i + 1} ---\n${text}`).join('\n\n')}
+
+Chats:
+${chatTexts.map((text, i) => `--- Chat File ${i + 1} ---\n${text}`).join('\n\n')}
+`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3.1-pro-preview",
+      contents: prompt,
+    });
+
+    if (!response.text) {
+      throw new Error("The AI returned an empty response.");
+    }
+
+    return response.text;
+  } catch (error: any) {
+    if (error.status === 429) {
+      throw new Error("Too many requests to the AI service (Rate Limit). Please wait a moment and try again.");
+    } else if (error.status === 400) {
+      throw new Error("The AI service rejected the request (Bad Request). Please check if your files are too large or contain unsupported content.");
+    }
+    throw new Error(error.message || "An error occurred while answering your question.");
   }
 }
